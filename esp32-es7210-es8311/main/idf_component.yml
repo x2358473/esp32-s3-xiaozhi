@@ -1,7 +1,0 @@
-## Local audio test firmware — minimal managed dependencies (no LVGL / Wi‑Fi connect / ML307 / fonts).
-dependencies:
-  espressif/esp_codec_dev: ~1.5
-  espressif/esp-sr: ~2.2.0
-  espressif/button: ~4.1.3
-  idf:
-    version: '>=5.4.0'

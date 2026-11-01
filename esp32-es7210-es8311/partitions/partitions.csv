@@ -1,9 +1,0 @@
-# Minimal: single factory app, no OTA, no SPIFFS.
-# Layout fits 4MB Flash (last byte at 0x400000). Use on 4MB chips as-is.
-# On larger Flash (e.g. 16MB), the same table is valid; only the first 4MB are
-# partitioned—enlarge `factory` and set matching CONFIG_ESPTOOLPY_FLASHSIZE if you need more app space.
-#
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x3F0000,
