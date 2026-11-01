@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 // CST836U 单点触摸（I2C 0x15，0x00 起 11 字节）
-// 与 ES7210/ES8311 共用同一条 I2C 总线，必须传入已有的 bus handle
+// 使用独立的触摸 I2C 总线，必须传入已创建的 bus handle
 
 bool cst836u_touch_init(i2c_master_bus_handle_t bus);
 bool cst836u_touch_read(int *x, int *y);
