@@ -74,7 +74,7 @@
 
 // 触摸诊断日志：每 100ms 轮询一次，按下时打印坐标，用于验证触摸接线与坐标映射。
 // 界面无交互控件，必须靠日志才能确认触摸是否生效。验证完成后置 0。
-#define TOUCH_DEBUG_LOG 1
+#define TOUCH_DEBUG_LOG 0
 
 // ---------------- 按键 ----------------
 #define BOOT_BUTTON_GPIO GPIO_NUM_0

@@ -6,7 +6,9 @@
         {
             "name": "esp32-s3-nano-rlcd",
             "sdkconfig_append": [
-                "CONFIG_USE_DEVICE_AEC=y"
+                "CONFIG_USE_DEVICE_AEC=y",
+                "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
+                "CONFIG_SR_WN_WN9L_NIHAOXIAOZHI_TTS3=y"
             ]
         }
     ]

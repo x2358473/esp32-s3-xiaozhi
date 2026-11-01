@@ -111,10 +111,11 @@ python scripts/build.py luobo/esp32-s3-nano-rlcd --name esp32-s3-nano-rlcd
 | :--- | :--- |
 | ST7305 显示 | ✅ 全链路正常（SPI3 20MHz + 自建 lv_display + 整帧 flush） |
 | CST836U 触摸 | ✅ 坐标准确，需用「写地址+STOP+重读」读法 |
-| ES8311/ES7210 | ✅ 400kHz 下 read/write 均 3/3，AEC 参考通道在位 |
+| ES8311/ES7210 | ✅ 400kHz 下 read/write 均 3/3，AEC 参考通道在位（**主控侧必须外挂 2.2k 上拉**，见第二轮记录） |
+| 唤醒词模型 | ✅ 换 `wn9l_nihaoxiaozhi_tts3`（h24 + tts2 语料）后唤醒明显好转，未做定量统计 |
 | NS4150B 功放 | ✅ 5V 供电正常；满功率峰值近 1A，USB 供电不足时会掉压复位 |
 | `i2c_cfg.port` 写死 1 | ✅ 无影响，实际走外部 `bus_handle`；拆分后 `I2C_NUM_1` 正好对上 |
-| 声学 | ⚠️ 壳体未密封，喇叭泄漏导致幻听（已定位，待结构改造） |
+| 声学 | ⚠️ 喇叭包一圈 EVA 后幻听仍在；泄漏主路径是喇叭**背面**经壳腔到 MIC 开孔（待方案 2 围小腔） |
 
 ## 设备端 AEC 与 I2C 地址约定
 
@@ -187,6 +188,97 @@ python scripts/build.py luobo/esp32-s3-nano-rlcd --name esp32-s3-nano-rlcd
 
 注：`speaking -> listening` 时固定出现一次的 `Dropped 1 audio packets (state: 5)` 是
 服务端 stop 之后的尾包，属正常现象。
+
+## 第二轮改造记录（2026-11-01 晚）
+
+### 1. codec I2C 主控侧补 2.2k 上拉（已验证有效）
+
+音频板 R1/R2(2.2k) 位于 BSS138 **漏极侧**（AU_3V3 域），只能拉低、不能提供高电平；
+主控侧源极没有任何上拉，只剩 ESP32 内部约 45k。400kHz Fast Mode 要求
+`tr ≈ 0.847·Rp·Cb ≤ 300ns`，110pF 下 45k 约 4.2µs、4.7k 约 438ns 均超标，**2.2k 约 205ns 合格**。
+
+做法：GPIO 47 / GPIO 38 各串 2.2k 到主控 3V3。**不要接 5V，也不要接音频板 AU_3V3**（跨电源域，
+等于没接主控侧上拉）。引线属直流偏置网络，长度不敏感，但会增加总线电容，
+**单根控制在 15cm 以内**（20cm 起 `tr` 逼近 300ns 上限）。
+
+| 阶段 | 启动自检行 |
+| :--- | :--- |
+| 无外部上拉 | `ES8311 @400000Hz read=3/3 write=1~2/3` → 偶发 `codec write flaky` 或回退 dummy |
+| **加 2.2k 后** | `ES8311 @400000Hz read=3/3 write=3/3` → `BoxAudioDevice initialized` 稳定出现 |
+
+静态核对：断电时 GPIO47/38 对 3V3 应量到 **2.1~2.2k**（此时内部上拉不生效），对 GND 不导通；
+上电空闲电平 **3.3V**。
+
+### 2. 唤醒模型换成 wn9l_nihaoxiaozhi_tts3
+
+`sdkconfig_append` 必须**显式把旧模型置 n**，否则两个模型都打进 `srmodels.bin`，
+而 `afe_audio_engine.cc:195` 取的是 `wakenet_models[0]`，等于没换：
+
+```json
+"CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
+"CONFIG_SR_WN_WN9L_NIHAOXIAOZHI_TTS3=y"
+```
+
+| 模型 | 内部名 | 网络 | 语料 | Flash | 双档阈值 |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| wn9_nihaoxiaozhi_tts（旧） | `wakenet9l_tts1h8_你好小智_…` | h8 | tts1 | 292K | 0.631 / 0.635 |
+| wn9l_nihaoxiaozhi_tts3（现用） | `wakenet9l_tts2h24_Ni3Hao3Xiao3Zhi4_…` | h24 | tts2 | 296K | **0.597 / 0.606** |
+
+验证：启动日志只有一行 `Model 0: wn9l_nihaoxiaozhi_tts3`，且
+`strings build/generated_assets.bin | grep wakenet9` 只能看到新名字。出现两行 `Model N:` 说明旧模型没禁掉。
+
+**副作用**：新模型包 `_MODEL_INFO_` 的第 3 个 `_` 分隔字段写成了带声调拼音，
+`esp_srmodel_get_wake_words()` 原样取出 → 日志与屏幕显示 `Ni3Hao3Xiao3Zhi4`。
+**这不是识别错误**，也不影响功能，仅显示层难看。
+
+### 3. 关闭触摸调试日志
+
+`config.h` 的 `TOUCH_DEBUG_LOG` 置 0，一次关掉三块（全在 `#if` 内）：
+`touch_probe` 任务（3072 字栈、10Hz 轮询）、`tp_dump_raw()` 原始寄存器快照、
+`touch_init` 里的 `[diag] A/B/C` 三段式诊断。`touch found at 0x15` 与 `probe failed` 保留。
+
+### 4. 回答被截断 / 尾音自激（`>> 一。` `>> 嗯。`）定位
+
+现象：TTS 只说到半句就跳回 listening；播放刚结束时冒出一条 `>> 一。` / `>> 嗯。`，
+并立刻开启新的一轮对话。**与唤醒模型无关，改造前就存在。**
+
+**判别方法**：看 `MicLevel` 的 ch1（ES8311 回接参考通道）。ch1 ≈ -90dBFS 表示没在放音；
+只要明显高于 -50dBFS 就是扬声器正在出声。
+
+| 时间 | 事件 | 切换瞬间 ch1 | 判定 |
+| :--- | :--- | :---: | :--- |
+| 21:28:29 | `speaking -> listening` | -30.9 | — |
+| 21:28:30 | `>> 一。` | -35.1 | ❌ 尾音自激 |
+| 21:24:40 | `>> 就这样了吗？` | -90.3 | ✅ 真人说话 |
+
+**机制**：`CONFIG_USE_DEVICE_AEC=y` → `aec_mode_ = kAecOnDeviceSide` →
+`GetDefaultListeningMode()` 返回 `kListeningModeRealtime`（`application.cc:1202`）。realtime 下：
+
+1. 进入 speaking 时 `EnableVoiceProcessing(false)` 被跳过（`application.cc:1062`），**麦克风全程不闭**；
+2. `tts stop` 到达切到 listening 时，播放队列里还剩 1~2 秒音频，而 `application.cc:1050`
+   的「等队列播完再开麦」只对 `kListeningModeAutoStop` 生效。
+
+于是：TTS 尾音 → 壳体泄漏 → 上行 → 服务端 ASR 识别出一个字 → 发 `tts stop` 截断回答 → 再开一轮。
+**「回答只说一半」和「冒出一/嗯」是同一个根因。**
+
+量化：播放期间 ch0（AEC 前）达 **-13 ~ -22dBFS**，比真人说话（-30 ~ -33dBFS）还高约 13dB。
+AEC 参考取自 ES8311 DAC 输出（NS4150B 之前），功放近满功率时的非线性失真无法被
+线性自适应滤波器消除，属结构性残余，靠降音量可部分缓解。
+
+**已试的结构改动**：喇叭边缘包一圈 EVA 泡棉 → 症状仍在。说明只封了正面边缘，
+喇叭**背面**经壳腔到 MIC 开孔的通路没被隔断；方案优先级 2「围小腔」才是关键。
+
+**未执行的决定性对照**：拔掉喇叭 1.25mm 2P 插头再测。ES8311 的 OUTP/OUTN 是电气回接
+ES7210 MIC3（R5/R7 0Ω），不经过功放与喇叭，所以拔喇叭后 AEC 参考仍在、软件行为不变，
+唯一变量是声学回声消失 —— 可一刀切开「声学」与「软件/服务端」。
+
+### 5. 本轮未实施（留待后续）
+
+| 事项 | 说明 |
+| :--- | :--- |
+| `GetAudioCodec()` 分支逻辑 | 探测失败分支只打日志没 `return`，而 `write_ok < 3` 却静默返回 dummy，两者处理与日志文案相反 |
+| realtime 模式兜底 | 播放期间暂停上行、等队列播完再开麦，可同时消除截断与尾音自激；代价是失去语音打断 |
+| 围小腔结构改造 | 25×20mm + 四面密封、挡墙顶到屏幕背面；建议先用蓝丁胶验证 |
 
 ## 幻听（误触发）排查记录（2026-11-01，已定位）
 
@@ -350,13 +442,16 @@ nano-rlcd: [touch] #4 pressed at (224,43)
 | `Input PCM Config: total 2 channels(1 microphone, 1 playback)` | ✅ AEC 参考通道在位 |
 | `Input PCM Config: total 1 channels(1 microphone, 0 playback)` | ❌ codec 回退到 dummy，检查 `ES8311 ... write=3/3` |
 | `BoxAudioCodec: BoxAudioDevice initialized` | codec 真正初始化成功 |
-| `ES8311 @400000Hz read=3/3 write=1/3` | 写不稳，I2C 电气或速率有问题 |
+| `ES8311 @400000Hz read=3/3 write=3/3` | ✅ 主控侧 2.2k 上拉到位 |
+| `ES8311 @400000Hz read=3/3 write=1/3` | 写不稳，缺主控侧上拉或引线过长 |
+| `Model 0: wn9l_nihaoxiaozhi_tts3` | ✅ 大模型已打包；出现两行 `Model N:` 说明旧模型没禁掉 |
+| `Wake word detected: Ni3Hao3Xiao3Zhi4` | 正常。新模型包唤醒词文本就是拼音，不是识别错误 |
 | `afe controls: wakenet=on aec=off (bits=0x5)` | 待机态（只有唤醒词） |
 | `afe controls: wakenet=off aec=on (bits=0x6)` | 对话态（AEC 打开） |
 | `MicLevel: ch0=.. ch1=..` | AEC 前电平；ch1 静默时应为 -90dBFS |
 | `CST836U: raw ret=ESP_OK pts=1 rx=.. ry=..` | 触摸读通且有触点 |
 | `CST836U: raw ret=ESP_ERR_INVALID_RESPONSE` | 读法退化成 repeated START 了 |
-| `>> 单字` | 服务端 ASR 结果，若用户未说话即为幻听（检查壳体密封） |
+| `>> 单字` | 服务端 ASR 结果；若用户未说话，先看前 1 秒 ch1：≈-90dBFS 才是真人，高于 -50dBFS 即为播放自激 |
 | `Wrong sequence` | UDP 丢包，单次约 60ms，与幻听无关 |
 
 ## 开发环境搭建（换机器照此执行）
@@ -408,6 +503,9 @@ idf.py -p /dev/cu.usbmodem* flash monitor
 | `cst836u_touch.c` | 新增 `s_tp_mutex` 互斥锁 | LVGL 与诊断任务并发访问 |
 | `cst836u_touch.c` | 复位等待 100→200ms | 给芯片足够复位时间 |
 | `afe_audio_engine.cc` | `AEC_MODE_FD_LOW_COST` | HIGH_PERF 在参考失配时压制人声 |
+| `config.json` | 唤醒模型改 `wn9l_nihaoxiaozhi_tts3`，并显式置旧模型 n | 唤醒成功率明显提升（第二轮） |
+| `config.h` | `TOUCH_DEBUG_LOG` 置 0 | 触摸已验收，关掉刷屏与多余轮询任务（第二轮） |
+| 硬件 | GPIO 47/38 各 2.2k 到 3V3 | codec I2C 写稳定，`write 1~2/3 → 3/3`（第二轮） |
 
 ### 已回退的改动
 
@@ -424,12 +522,13 @@ idf.py -p /dev/cu.usbmodem* flash monitor
 
 | 问题 | 状态 |
 | :--- | :--- |
-| 壳体声学泄漏导致幻听 | **已定位，待结构改造**（喇叭密封圈） |
-| 唤醒漏检（-30dBFS 仍失败） | 已定位为频响畸变 + 模型泛化，待声学改善 |
+| 壳体声学泄漏导致幻听 | **已定位，待结构改造**（喇叭包 EVA 一圈无效，需围小腔） |
+| 回答被截断 / 尾音自激（`>> 一。`） | **已定位**：realtime 模式播放期间不闭麦 + 泄漏；待方案 2 或 realtime 兜底 |
+| 唤醒漏检（-30dBFS 仍失败） | 换 wn9l 大模型后明显改善，剩余部分待声学改造 |
 | 播放中无法语音打断 | 当前无上行门控，属预期行为 |
 
 ### 分支状态
 
 - 分支：`board/nano-rlcd`
-- 上述保留改动**均在改造后的工作区**，尚未提交
-- 建议按逻辑拆成独立提交：引脚重排 / 触摸修复 / 屏幕降频 / 音频参数回归
+- 第一轮（引脚重排 / 触摸修复 / 屏幕降频 / 音频参数回归）已全部提交
+- 第二轮（2.2k 上拉实测 / 唤醒模型 / 关闭触摸调试日志 / 文档）见上方「第二轮改造记录」
