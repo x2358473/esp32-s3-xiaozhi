@@ -64,7 +64,9 @@ height_(height)
     esp_lcd_panel_io_spi_config_t io_config = {};
     io_config.dc_gpio_num = static_cast<gpio_num_t>(dc_);
     io_config.cs_gpio_num = static_cast<gpio_num_t>(cs_);
-    io_config.pclk_hz = 40 * 1000 * 1000;
+    // 20MHz：SPI3 无 IOMUX，全部经 GPIO 交换矩阵路由，40MHz 在本板实测不稳定
+    // （整帧 15000 字节会出现错位/花屏），20MHz 长期稳定。
+    io_config.pclk_hz = 20 * 1000 * 1000;
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
     io_config.spi_mode = 0;
