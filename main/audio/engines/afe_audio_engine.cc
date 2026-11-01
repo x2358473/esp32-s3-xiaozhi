@@ -151,9 +151,10 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     }
 
     afe_config->aec_init = codec_->input_reference();
-    // 全双工场景仍用 FD，但改用高性能档：本板回采通道无衰减网络，功放音量一大
-    // 参考就接近饱和，LOW_COST 档消不干净，残留回声会被服务端 VAD 判成用户插话。
-    afe_config->aec_mode = AEC_MODE_FD_HIGH_PERF;
+    // 回到 LOW_COST：本板 AEC 参考取自 ES8311 功放前级，与经过 NS4150B 和喇叭的
+    // 真实回声波形不匹配。HIGH_PERF 在这种失配前提下仍做深度消除，会连同近端人声
+    // 一起压制（实测识别率大幅下降），收益不抵损失。回声残留改由上层上行门控解决。
+    afe_config->aec_mode = AEC_MODE_FD_LOW_COST;
     afe_config->aec_nlp_level = AEC_NLP_LEVEL_VERYAGGR;
     // 降噪默认关闭；CONFIG_USE_AFE_NS 打开时同时要求 srmodels.bin 里打包了 nsnet 模型。
     bool ns_enabled = false;

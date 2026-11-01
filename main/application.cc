@@ -642,9 +642,6 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
-                        // 播放刚结束，扬声器与房间混响仍有尾音；短暂抑制上行，
-                        // 避免服务端 VAD 把残响当成用户说话（表现为幻听）。
-                        audio_service_.SuppressUplinkForMs(300);
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
                         } else {

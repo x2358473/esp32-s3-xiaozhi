@@ -142,8 +142,6 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
-    // 播放结束后的短时间内抑制上行，避免音箱混响尾音被服务端识别成用户说话。
-    void SuppressUplinkForMs(int ms);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
@@ -172,9 +170,6 @@ private:
     int decoder_frame_size_ = 0;
     DebugStatistics debug_statistics_;
     int64_t last_encode_drop_log_time_ = 0;
-    // 上行抑制窗口：截止时间（us）与窗口内已丢弃帧数。跨任务访问，用 atomic。
-    std::atomic<int64_t> suppress_uplink_until_us_{0};
-    std::atomic<uint32_t> suppress_uplink_dropped_{0};
     srmodel_list_t* models_list_ = nullptr;
 
     EventGroupHandle_t event_group_;

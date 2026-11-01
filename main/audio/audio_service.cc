@@ -227,48 +227,6 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
         }
     }
 
-    /* 输入高通（二阶，150Hz）：挪动设备、敲击桌面这类机械振动会在低频产生大振幅冲击，
-     * 被上行送到服务端后 ASR 会拼出词（表现为"幻听"）。语音能量主要在 300Hz 以上，
-     * 200Hz 以下高通几乎不影响语音，却能显著削弱这类结构传导噪声。 */
-    {
-        static float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-        static float x1[2] = {0, 0}, x2[2] = {0, 0}, y1[2] = {0, 0}, y2[2] = {0, 0};
-        static int coeff_fs = 0;
-        const int ch = codec_->input_channels();
-        const int fs = codec_->input_sample_rate();
-        if (fs != coeff_fs && fs > 0) {
-            constexpr float kPi = 3.14159265358979f;
-            const float fc = 150.0f;
-            const float q = 0.7071f;
-            const float w0 = 2.0f * kPi * fc / static_cast<float>(fs);
-            const float cw = cosf(w0);
-            const float alpha = sinf(w0) / (2.0f * q);
-            const float a0 = 1.0f + alpha;
-            b0 = (1.0f + cw) * 0.5f / a0;
-            b1 = -(1.0f + cw) / a0;
-            b2 = b0;
-            a1 = -2.0f * cw / a0;
-            a2 = (1.0f - alpha) / a0;
-            for (int c = 0; c < 2; c++) {
-                x1[c] = x2[c] = y1[c] = y2[c] = 0.0f;
-            }
-            coeff_fs = fs;
-        }
-        const int frames = ch > 0 ? static_cast<int>(data.size() / ch) : 0;
-        for (int c = 0; c < ch && c < 2; c++) {
-            for (int i = 0; i < frames; i++) {
-                const float x = static_cast<float>(data[i * ch + c]);
-                const float y =
-                    b0 * x + b1 * x1[c] + b2 * x2[c] - a1 * y1[c] - a2 * y2[c];
-                x2[c] = x1[c];
-                x1[c] = x;
-                y2[c] = y1[c];
-                y1[c] = y;
-                data[i * ch + c] = static_cast<int16_t>(y);
-            }
-        }
-    }
-
     // ==== 临时诊断：输入电平，用于定位唤醒距离问题；问题定位后整段删除 ====
     {
         static uint64_t acc_sq[2] = {0, 0};
@@ -648,43 +606,7 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     }
 }
 
-void AudioService::SuppressUplinkForMs(int ms) {
-    if (ms <= 0) {
-        return;
-    }
-    int64_t now = esp_timer_get_time();
-    suppress_uplink_dropped_.store(0, std::memory_order_relaxed);
-    suppress_uplink_until_us_.store(now + (int64_t)ms * 1000, std::memory_order_relaxed);
-    ESP_LOGI(TAG, "Suppress uplink for %d ms after playback stop", ms);
-}
-
 void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm) {
-    if (type == kAudioTaskTypeEncodeToSendQueue) {
-        int64_t until = suppress_uplink_until_us_.load(std::memory_order_relaxed);
-        int64_t now = esp_timer_get_time();
-        if (until != 0 && now < until) {
-            /* 播放刚结束，麦克风里还有房间混响尾音。这段音频若发出去，
-             * 服务端 VAD 会当成用户说话，ASR 再从残音里凑出词（幻听）。 */
-            {
-                std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-                if (!timestamp_queue_.empty()) {
-                    timestamp_queue_.pop_front();
-                }
-            }
-            ++suppress_uplink_dropped_;
-            return;
-        }
-        if (until != 0) {
-            /* 窗口结束：复位并打印本次实际丢弃的帧数，便于验证窗口是否生效。 */
-            uint32_t dropped = suppress_uplink_dropped_.exchange(0, std::memory_order_relaxed);
-            if (dropped > 0) {
-                ESP_LOGI(TAG, "Uplink suppress window ended, dropped %lu frames",
-                         (unsigned long)dropped);
-            }
-            suppress_uplink_until_us_.store(0, std::memory_order_relaxed);
-        }
-    }
-
     AudioTask task;
     task.type = type;
     task.pcm = std::move(pcm);
