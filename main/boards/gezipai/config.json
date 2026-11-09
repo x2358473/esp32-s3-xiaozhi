@@ -9,7 +9,7 @@
                 "CONFIG_USE_DEVICE_AEC=y",
                 "CONFIG_USE_AFE_WAKE_WORD=y",
                 "CONFIG_SEND_WAKE_WORD_DATA=y",
-                "CONFIG_OTA_URL=\"http://192.168.22.153:8002/xiaozhi/ota/\""
+                "CONFIG_OTA_URL=\"https://xiaozhi.luobonas.cn:18002/xiaozhi/ota/\""
             ]
         }
     ]
